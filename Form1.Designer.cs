@@ -100,9 +100,9 @@
             exitButton.TabIndex = 5;
             exitButton.TabStop = false;
             exitButton.WaitOnLoad = true;
-            //
+            // 
             // DiscordButton
-            //
+            // 
             DiscordButton.BackgroundImage = Properties.Resources.discordNormal;
             DiscordButton.BackgroundImageLayout = ImageLayout.Zoom;
             DiscordButton.ErrorImage = Properties.Resources.discordDisabled;
@@ -113,9 +113,9 @@
             DiscordButton.TabIndex = 6;
             DiscordButton.TabStop = false;
             DiscordButton.WaitOnLoad = true;
-            //
+            // 
             // WebsiteButton
-            //
+            // 
             WebsiteButton.BackgroundImage = Properties.Resources.webNormal;
             WebsiteButton.BackgroundImageLayout = ImageLayout.Stretch;
             WebsiteButton.ErrorImage = Properties.Resources.webDisabled;
@@ -126,9 +126,9 @@
             WebsiteButton.TabIndex = 7;
             WebsiteButton.TabStop = false;
             WebsiteButton.WaitOnLoad = true;
-            //
+            // 
             // RepairButton
-            //
+            // 
             RepairButton.BackgroundImage = Properties.Resources.repairDisabled;
             RepairButton.BackgroundImageLayout = ImageLayout.Stretch;
             RepairButton.ErrorImage = Properties.Resources.repairDisabled;
@@ -139,52 +139,52 @@
             RepairButton.TabIndex = 8;
             RepairButton.TabStop = false;
             RepairButton.WaitOnLoad = true;
-            //
+            // 
             // launcherversion
-            //
+            // 
             launcherversion.Location = new Point(0, 0);
             launcherversion.Name = "launcherversion";
             launcherversion.Size = new Size(100, 23);
             launcherversion.TabIndex = 0;
-            //
+            // 
             // trayIcon
-            //
+            // 
             trayIcon.ContextMenuStrip = trayContextMenu;
-            trayIcon.Icon = (Icon)resources.GetObject("$this.Icon");
+            trayIcon.Icon = (Icon)resources.GetObject("trayIcon.Icon");
             trayIcon.Text = "ToyBattles Launcher";
-            trayIcon.Visible = false;
             trayIcon.DoubleClick += TrayIcon_DoubleClick;
-            //
+            // 
             // trayContextMenu
-            //
-            trayContextMenu.Items.AddRange(new ToolStripItem[] { showMenuItem, runInBackgroundMenuItem, new ToolStripSeparator(), stopLauncherMenuItem });
+            // 
+            trayContextMenu.Items.AddRange(new ToolStripItem[] { showMenuItem, runInBackgroundMenuItem, stopLauncherMenuItem });
             trayContextMenu.Name = "trayContextMenu";
-            trayContextMenu.Size = new Size(181, 92);
-            //
+            trayContextMenu.Size = new Size(176, 76);
+            // 
             // showMenuItem
-            //
+            // 
+            showMenuItem.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
             showMenuItem.Name = "showMenuItem";
-            showMenuItem.Size = new Size(180, 22);
+            showMenuItem.Size = new Size(175, 22);
             showMenuItem.Text = "Show Launcher";
-            showMenuItem.Font = new Font(showMenuItem.Font, FontStyle.Bold);
             showMenuItem.Click += ShowMenuItem_Click;
-            //
+            // 
             // runInBackgroundMenuItem
-            //
-            runInBackgroundMenuItem.Name = "runInBackgroundMenuItem";
-            runInBackgroundMenuItem.Size = new Size(180, 22);
-            runInBackgroundMenuItem.Text = "Run in Background";
-            runInBackgroundMenuItem.CheckOnClick = true;
+            // 
             runInBackgroundMenuItem.Checked = true;
+            runInBackgroundMenuItem.CheckOnClick = true;
+            runInBackgroundMenuItem.CheckState = CheckState.Checked;
+            runInBackgroundMenuItem.Name = "runInBackgroundMenuItem";
+            runInBackgroundMenuItem.Size = new Size(175, 22);
+            runInBackgroundMenuItem.Text = "Run in Background";
             runInBackgroundMenuItem.Click += RunInBackgroundMenuItem_Click;
-            //
+            // 
             // stopLauncherMenuItem
-            //
+            // 
             stopLauncherMenuItem.Name = "stopLauncherMenuItem";
-            stopLauncherMenuItem.Size = new Size(180, 22);
+            stopLauncherMenuItem.Size = new Size(175, 22);
             stopLauncherMenuItem.Text = "Stop Launcher";
             stopLauncherMenuItem.Click += StopLauncherMenuItem_Click;
-            //
+            // 
             // Form1
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);

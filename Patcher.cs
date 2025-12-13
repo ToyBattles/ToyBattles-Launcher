@@ -22,8 +22,8 @@ namespace Launcher
 
         public async Task ApplyPatchAsync(string localVersion, string newVersion, IProgress<int> progress)
         {
-            string nextVersion = await IncrementVersion(localVersion);
-            string cabUrl = $"{_config.ServerAddress}/microvolts/{nextVersion}/microvolts-{localVersion}-{nextVersion}.cab";
+            // Use the actual target version directly, not an incremented version
+            string cabUrl = $"{_config.ServerAddress}/microvolts/{newVersion}/microvolts-{localVersion}-{newVersion}.cab";
             string tempDir = Path.Combine(Path.GetTempPath(), $"LauncherPatch_{Guid.NewGuid()}");
             Directory.CreateDirectory(tempDir);
             string cabPath = Path.Combine(tempDir, "patch.cab");
@@ -51,24 +51,6 @@ namespace Launcher
             {
                 Directory.Delete(tempDir, true);
             }
-        }
-
-        private Task<string> IncrementVersion(string version)
-        {
-            string prefix = "";
-            string numPart = version;
-            if (version.StartsWith("ENG_"))
-            {
-                prefix = "ENG_";
-                numPart = version.Substring(4);
-            }
-            var parts = numPart.Split('.');
-            if (parts.Length > 0 && int.TryParse(parts[^1], out int last))
-            {
-                parts[^1] = (last + 1).ToString();
-                return Task.FromResult(prefix + string.Join(".", parts));
-            }
-            return Task.FromResult(version);
         }
 
         private Dictionary<string, string> ParseChecksums(string xmlContent)

@@ -82,35 +82,71 @@ namespace Launcher
 
             string localPatchPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "patch.ini");
             string localVersion = "";
+            string localContent = "";
             if (File.Exists(localPatchPath))
             {
-                string localContent = await File.ReadAllTextAsync(localPatchPath);
+                localContent = await File.ReadAllTextAsync(localPatchPath);
                 localVersion = GetVersion(localContent);
             }
 
             string newVersion = GetVersion(remotePatch);
             Logger.Log($"Local version: {localVersion}, Remote version: {newVersion}");
 
-            while (string.Compare(newVersion, localVersion) > 0)
+            // Check if versions differ - need to apply patch
+            if (!string.IsNullOrEmpty(localVersion) && string.Compare(newVersion, localVersion) > 0)
             {
+                Logger.Log($"New version available, applying patch from {localVersion} to {newVersion}");
                 await _patcher.ApplyPatchAsync(localVersion, newVersion, progress);
-                localVersion = await IncrementVersion(localVersion);
+                await _downloader.DownloadFileAsync(_config.PatchUrl, localPatchPath, progress, 0, 100);
             }
-
-            await _downloader.DownloadFileAsync(_config.PatchUrl, localPatchPath, progress, 0, 100);
+            // Same version - check if patch content changed by checksum
+            else if (!string.IsNullOrEmpty(localVersion) && localVersion == newVersion)
+            {
+                uint localChecksum = Adler32(System.Text.Encoding.UTF8.GetBytes(localContent));
+                uint remoteChecksum = Adler32(System.Text.Encoding.UTF8.GetBytes(remotePatch));
+                
+                if (localChecksum != remoteChecksum)
+                {
+                    Logger.Log($"Same version ({localVersion}) but patch.ini content changed. Local checksum: {localChecksum:x8}, Remote checksum: {remoteChecksum:x8}. Re-applying patch...");
+                    await _patcher.ApplyPatchAsync(localVersion, newVersion, progress);
+                    await _downloader.DownloadFileAsync(_config.PatchUrl, localPatchPath, progress, 0, 100);
+                }
+                else
+                {
+                    Logger.Log($"Version {localVersion} is up to date, checksums match.");
+                    progress.Report(100);
+                }
+            }
+            else
+            {
+                // No local version, just download the patch.ini
+                await _downloader.DownloadFileAsync(_config.PatchUrl, localPatchPath, progress, 0, 100);
+            }
         }
 
         private async Task CheckCgdDipAsync()
         {
             string cgdPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "cgd.dip");
-            if (!File.Exists(cgdPath)) return;
+            if (!File.Exists(cgdPath))
+            {
+                Logger.Log("cgd.dip not found locally, skipping check.");
+                return;
+            }
 
+            Logger.Log($"Checking cgd.dip from {_config.CgdUrl}");
             byte[]? remoteData = await _downloader.DownloadBytesAsync(_config.CgdUrl);
-            if (remoteData == null) return;
+            if (remoteData == null)
+            {
+                Logger.Log("Failed to download remote cgd.dip, skipping check.");
+                return;
+            }
 
             byte[] localData = await File.ReadAllBytesAsync(cgdPath);
             uint localChecksum = Adler32(localData);
             uint remoteChecksum = Adler32(remoteData);
+
+            Logger.Log($"cgd.dip - Local size: {localData.Length} bytes, Remote size: {remoteData.Length} bytes");
+            Logger.Log($"cgd.dip - Local checksum: {localChecksum:x8}, Remote checksum: {remoteChecksum:x8}");
 
             if (remoteChecksum != localChecksum)
             {
@@ -120,7 +156,7 @@ namespace Launcher
             }
             else
             {
-                Logger.Log("cgd.dip checksums match.");
+                Logger.Log("cgd.dip checksums match, no update needed.");
             }
         }
 
@@ -139,24 +175,6 @@ namespace Launcher
                 }
             }
             return "";
-        }
-
-        private Task<string> IncrementVersion(string version)
-        {
-            string prefix = "";
-            string numPart = version;
-            if (version.StartsWith("ENG_"))
-            {
-                prefix = "ENG_";
-                numPart = version.Substring(4);
-            }
-            var parts = numPart.Split('.');
-            if (parts.Length > 0 && int.TryParse(parts[^1], out int last))
-            {
-                parts[^1] = (last + 1).ToString();
-                return Task.FromResult(prefix + string.Join(".", parts));
-            }
-            return Task.FromResult(version);
         }
 
         private static uint Adler32(byte[] data)
