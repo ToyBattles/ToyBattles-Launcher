@@ -3,6 +3,7 @@ using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Security;
+using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
 
@@ -10,7 +11,7 @@ namespace Launcher
 {
     public class Downloader
     {
-        private readonly HttpClient _httpClient;
+        private HttpClient _httpClient;
 
         public Downloader()
         {
@@ -18,34 +19,75 @@ namespace Launcher
             // This fixes "The decryption operation failed" errors
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
             
-            var handler = new HttpClientHandler
+            _httpClient = CreateHttpClient();
+        }
+
+        private static HttpClient CreateHttpClient()
+        {
+            // Use SocketsHttpHandler for better TLS handling on .NET 8
+            var handler = new SocketsHttpHandler
             {
                 // Allow automatic decompression
                 AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-                // Use default credentials if needed
-                UseDefaultCredentials = false,
+                // Disable connection pooling to avoid stale connections causing TLS issues
+                PooledConnectionLifetime = TimeSpan.FromMinutes(1),
+                PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30),
                 // Configure SSL/TLS settings
-                SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13,
-                // Custom certificate validation to handle potential certificate issues
-                ServerCertificateCustomValidationCallback = ValidateServerCertificate
+                SslOptions = new SslClientAuthenticationOptions
+                {
+                    EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                    // Custom certificate validation to handle potential certificate issues
+                    RemoteCertificateValidationCallback = ValidateServerCertificate,
+                    // Allow renegotiation
+                    AllowRenegotiation = true,
+                    // Use default cipher suites
+                    CipherSuitesPolicy = null
+                },
+                // Connection settings
+                ConnectTimeout = TimeSpan.FromSeconds(30),
+                // Keep-alive settings
+                KeepAlivePingPolicy = HttpKeepAlivePingPolicy.WithActiveRequests,
+                KeepAlivePingDelay = TimeSpan.FromSeconds(60),
+                KeepAlivePingTimeout = TimeSpan.FromSeconds(30),
+                // Max connections per server
+                MaxConnectionsPerServer = 4
             };
 
-            _httpClient = new HttpClient(handler)
+            var client = new HttpClient(handler)
             {
-                Timeout = TimeSpan.FromMinutes(30) // Increased timeout for large files
+                Timeout = TimeSpan.FromMinutes(30), // Increased timeout for large files
+                // Force HTTP/1.1 to avoid potential HTTP/2 TLS issues
+                DefaultRequestVersion = HttpVersion.Version11,
+                DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact
             };
-            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-            _httpClient.DefaultRequestHeaders.ConnectionClose = false;
-            _httpClient.DefaultRequestHeaders.Accept.ParseAdd("*/*");
-            _httpClient.DefaultRequestHeaders.AcceptEncoding.ParseAdd("gzip, deflate");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            client.DefaultRequestHeaders.ConnectionClose = false;
+            client.DefaultRequestHeaders.Accept.ParseAdd("*/*");
+            client.DefaultRequestHeaders.ExpectContinue = false;
+            
+            return client;
         }
 
-        private static bool ValidateServerCertificate(HttpRequestMessage request, X509Certificate2? certificate, X509Chain? chain, SslPolicyErrors sslPolicyErrors)
+        private void ResetHttpClient()
+        {
+            // Dispose old client and create a fresh one to clear any bad connection state
+            var oldClient = _httpClient;
+            _httpClient = CreateHttpClient();
+            try { oldClient.Dispose(); } catch { }
+            Logger.Log("HttpClient reset due to connection issues");
+        }
+
+        private static bool ValidateServerCertificate(object sender, X509Certificate? certificate, X509Chain? chain, SslPolicyErrors sslPolicyErrors)
         {
             // Log certificate issues for debugging but allow the connection
             if (sslPolicyErrors != SslPolicyErrors.None)
             {
-                Logger.Log($"SSL Certificate warning for {request.RequestUri}: {sslPolicyErrors}");
+                Logger.Log($"SSL Certificate warning: {sslPolicyErrors}");
+                if (certificate != null)
+                {
+                    Logger.Log($"Certificate subject: {certificate.Subject}");
+                    Logger.Log($"Certificate issuer: {certificate.Issuer}");
+                }
             }
             // Return true to accept the certificate (be cautious with this in production)
             return true;
@@ -139,10 +181,16 @@ namespace Launcher
                         try { File.Delete(filePath); } catch { }
                     }
 
-                    using var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+                    using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                    // Add cache-busting header to avoid cached bad responses
+                    request.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoCache = true };
+                    
+                    using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
                     response.EnsureSuccessStatusCode();
 
                     long? totalSize = response.Content.Headers.ContentLength;
+                    Logger.Log($"Content-Length: {totalSize?.ToString() ?? "unknown"}");
+                    
                     using var stream = await response.Content.ReadAsStreamAsync();
                     using var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 1048576, true);
 
@@ -169,16 +217,23 @@ namespace Launcher
                     }
 
                     await fileStream.FlushAsync();
-                    Logger.Log($"Download of {Path.GetFileName(filePath)} completed successfully");
+                    Logger.Log($"Download of {Path.GetFileName(filePath)} completed successfully. Downloaded {downloaded} bytes.");
                     return; // Success, exit the retry loop
                 }
                 catch (Exception ex) when (IsRetryableException(ex) && attempt < maxRetries)
                 {
                     lastException = ex;
                     Logger.Log($"Error downloading file from {url} (attempt {attempt}/{maxRetries}): {ex.Message}");
+                    if (ex.InnerException != null)
+                    {
+                        Logger.Log($"Inner exception: {ex.InnerException.Message}");
+                    }
+                    
+                    // Reset HttpClient to clear any bad connection state
+                    ResetHttpClient();
                     
                     // Wait before retrying with exponential backoff
-                    int delayMs = 1000 * (int)Math.Pow(2, attempt - 1); // 1s, 2s, 4s
+                    int delayMs = 2000 * (int)Math.Pow(2, attempt - 1); // 2s, 4s, 8s
                     Logger.Log($"Retrying in {delayMs / 1000} seconds...");
                     await Task.Delay(delayMs);
                 }
@@ -201,7 +256,10 @@ namespace Launcher
         private static bool IsRetryableException(Exception ex)
         {
             // Check for TLS/SSL errors (decryption failed)
-            if (ex.Message.Contains("decryption operation failed", StringComparison.OrdinalIgnoreCase))
+            if (ex.Message.Contains("decryption", StringComparison.OrdinalIgnoreCase))
+                return true;
+            
+            if (ex.Message.Contains("dekryptera", StringComparison.OrdinalIgnoreCase)) // Swedish
                 return true;
             
             // Check for network-related errors
