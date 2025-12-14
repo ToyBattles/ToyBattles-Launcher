@@ -17,8 +17,8 @@ namespace Launcher
 
         public Downloader()
         {
-            // Configure TLS settings globally
-            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
+            // Configure TLS settings globally - force TLS 1.2 for Windows 11 compatibility
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
             ServicePointManager.DefaultConnectionLimit = 100;
             ServicePointManager.Expect100Continue = false;
             ServicePointManager.CheckCertificateRevocationList = false;
@@ -36,12 +36,14 @@ namespace Launcher
                 PooledConnectionIdleTimeout = TimeSpan.Zero,
                 SslOptions = new SslClientAuthenticationOptions
                 {
-                    EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                    // Force TLS 1.2 only for maximum compatibility with Windows 11
+                    EnabledSslProtocols = SslProtocols.Tls12,
                     RemoteCertificateValidationCallback = (sender, cert, chain, errors) => true,
-                    AllowRenegotiation = true
+                    AllowRenegotiation = true,
+                    CertificateRevocationCheckMode = X509RevocationMode.NoCheck
                 },
                 ConnectTimeout = TimeSpan.FromSeconds(60),
-                MaxConnectionsPerServer = 2,
+                MaxConnectionsPerServer = 4,
                 ResponseDrainTimeout = TimeSpan.FromSeconds(5)
             };
 
@@ -53,7 +55,7 @@ namespace Launcher
             };
             client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
             client.DefaultRequestHeaders.Connection.Clear();
-            client.DefaultRequestHeaders.Connection.Add("close");
+            client.DefaultRequestHeaders.Connection.Add("keep-alive");
             client.DefaultRequestHeaders.Accept.ParseAdd("*/*");
             client.DefaultRequestHeaders.ExpectContinue = false;
             
@@ -143,7 +145,7 @@ namespace Launcher
 
         public async Task DownloadFileAsync(string url, string filePath, IProgress<int>? progress = null, int baseProgress = 0, int maxProgress = 100)
         {
-            const int maxRetries = 5;
+            const int maxRetries = 7;
             Exception? lastException = null;
 
             for (int attempt = 1; attempt <= maxRetries; attempt++)
@@ -157,17 +159,22 @@ namespace Launcher
                         try { File.Delete(filePath); } catch { }
                     }
 
-                    // Try curl.exe first (uses Windows native TLS, most reliable)
+                    // Try BITS first (most reliable on Windows 11, handles TLS natively)
                     if (attempt <= 2)
+                    {
+                        await DownloadWithBitsAsync(url, filePath, progress, baseProgress, maxProgress);
+                    }
+                    // Then try curl.exe with TLS 1.2
+                    else if (attempt <= 4)
                     {
                         await DownloadWithCurlAsync(url, filePath, progress, baseProgress, maxProgress);
                     }
-                    // Then try PowerShell
-                    else if (attempt <= 4)
+                    // Then try chunked HttpClient download
+                    else if (attempt <= 6)
                     {
-                        await DownloadWithPowerShellAsync(url, filePath, progress, baseProgress, maxProgress);
+                        await DownloadWithChunkedHttpClientAsync(url, filePath, progress, baseProgress, maxProgress);
                     }
-                    // Finally try HttpClient
+                    // Finally try standard HttpClient
                     else
                     {
                         await DownloadWithHttpClientAsync(url, filePath, progress, baseProgress, maxProgress);
@@ -197,102 +204,11 @@ namespace Launcher
         }
 
         /// <summary>
-        /// Download using curl.exe which is built into Windows 10/11 and uses Windows native TLS
+        /// Download using BITS (Background Intelligent Transfer Service) - most reliable on Windows 11
         /// </summary>
-        private async Task DownloadWithCurlAsync(string url, string filePath, IProgress<int>? progress, int baseProgress, int maxProgress)
+        private async Task DownloadWithBitsAsync(string url, string filePath, IProgress<int>? progress, int baseProgress, int maxProgress)
         {
-            Logger.Log("Using curl.exe for download");
-            
-            // Ensure directory exists
-            string? directory = Path.GetDirectoryName(filePath);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
-
-            // curl.exe is built into Windows 10 1803+ and Windows 11
-            // It uses Windows native TLS (Schannel) which handles the connection properly
-            // Don't force TLS version - let curl auto-negotiate
-            var psi = new ProcessStartInfo
-            {
-                FileName = "curl.exe",
-                Arguments = $"--location --fail --silent --show-error --output \"{filePath}\" --retry 3 --retry-delay 2 \"{url}\"",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-
-            using var process = new Process { StartInfo = psi };
-            
-            var errorBuilder = new System.Text.StringBuilder();
-            process.ErrorDataReceived += (s, e) => { if (e.Data != null) errorBuilder.AppendLine(e.Data); };
-            
-            process.Start();
-            process.BeginErrorReadLine();
-
-            // Report progress periodically while waiting
-            var progressTask = Task.Run(async () =>
-            {
-                int progressValue = baseProgress;
-                while (!process.HasExited)
-                {
-                    await Task.Delay(1000);
-                    
-                    if (File.Exists(filePath))
-                    {
-                        try
-                        {
-                            var fileInfo = new FileInfo(filePath);
-                            progressValue = Math.Min(maxProgress - 5, progressValue + 2);
-                            progress?.Report(progressValue);
-                        }
-                        catch { }
-                    }
-                }
-            });
-
-            // Wait for process with timeout (60 minutes for large files)
-            bool exited = await Task.Run(() => process.WaitForExit(60 * 60 * 1000));
-            
-            if (!exited)
-            {
-                try { process.Kill(); } catch { }
-                throw new TimeoutException("curl download timed out after 60 minutes");
-            }
-
-            await progressTask;
-            
-            string error = errorBuilder.ToString();
-            
-            if (process.ExitCode != 0)
-            {
-                Logger.Log($"curl error: {error}");
-                throw new Exception($"curl download failed with exit code {process.ExitCode}: {error}");
-            }
-
-            // Verify file was downloaded
-            if (!File.Exists(filePath))
-            {
-                throw new Exception("Download completed but file not found");
-            }
-
-            var finalFileInfo = new FileInfo(filePath);
-            if (finalFileInfo.Length == 0)
-            {
-                throw new Exception("Downloaded file is empty");
-            }
-
-            progress?.Report(maxProgress);
-            Logger.Log($"curl download completed. File size: {finalFileInfo.Length} bytes");
-        }
-
-        /// <summary>
-        /// Download using PowerShell's Invoke-WebRequest
-        /// </summary>
-        private async Task DownloadWithPowerShellAsync(string url, string filePath, IProgress<int>? progress, int baseProgress, int maxProgress)
-        {
-            Logger.Log("Using PowerShell for download");
+            Logger.Log("Using BITS for download");
             
             string? directory = Path.GetDirectoryName(filePath);
             if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
@@ -302,17 +218,34 @@ namespace Launcher
 
             string escapedUrl = url.Replace("'", "''");
             string escapedPath = filePath.Replace("'", "''");
+            string jobName = $"LauncherDownload_{Guid.NewGuid():N}";
             
-            // Use Start-BitsTransfer which uses BITS (Background Intelligent Transfer Service)
-            // This is more reliable than Invoke-WebRequest for large files
+            // Use BITS with TLS 1.2 - BITS handles certificate validation properly on Windows 11
             string script = $@"
+$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+# Force TLS 1.2
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+[Net.ServicePointManager]::CheckCertificateRevocationList = $false
+
 try {{
-    Start-BitsTransfer -Source '{escapedUrl}' -Destination '{escapedPath}' -Priority Foreground
+    # Use Start-BitsTransfer with security policy set
+    $job = Start-BitsTransfer -Source '{escapedUrl}' -Destination '{escapedPath}' -Priority Foreground -DisplayName '{jobName}' -Asynchronous
+    
+    while (($job.JobState -eq 'Transferring') -or ($job.JobState -eq 'Connecting')) {{
+        Start-Sleep -Milliseconds 500
+    }}
+    
+    if ($job.JobState -eq 'Transferred') {{
+        Complete-BitsTransfer -BitsJob $job
+    }} else {{
+        $errorMsg = $job.ErrorDescription
+        Remove-BitsTransfer -BitsJob $job -ErrorAction SilentlyContinue
+        throw ""BITS transfer failed: $errorMsg""
+    }}
 }} catch {{
-    # Fallback to Invoke-WebRequest if BITS fails
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
-    Invoke-WebRequest -Uri '{escapedUrl}' -OutFile '{escapedPath}' -UseBasicParsing
+    throw $_.Exception.Message
 }}
 ";
 
@@ -342,8 +275,13 @@ try {{
                     await Task.Delay(500);
                     if (File.Exists(filePath))
                     {
-                        progressValue = Math.Min(maxProgress - 5, progressValue + 1);
-                        progress?.Report(progressValue);
+                        try
+                        {
+                            var fileInfo = new FileInfo(filePath);
+                            progressValue = Math.Min(maxProgress - 5, progressValue + 2);
+                            progress?.Report(progressValue);
+                        }
+                        catch { }
                     }
                 }
             });
@@ -353,7 +291,7 @@ try {{
             if (!exited)
             {
                 try { process.Kill(); } catch { }
-                throw new TimeoutException("PowerShell download timed out");
+                throw new TimeoutException("BITS download timed out");
             }
 
             await progressTask;
@@ -361,20 +299,204 @@ try {{
             if (process.ExitCode != 0)
             {
                 string error = errorBuilder.ToString();
-                Logger.Log($"PowerShell error: {error}");
-                throw new Exception($"PowerShell download failed: {error}");
+                Logger.Log($"BITS error: {error}");
+                throw new Exception($"BITS download failed: {error}");
             }
 
             if (!File.Exists(filePath) || new FileInfo(filePath).Length == 0)
             {
-                throw new Exception("Download failed - file not found or empty");
+                throw new Exception("BITS download failed - file not found or empty");
             }
 
             progress?.Report(maxProgress);
+            Logger.Log($"BITS download completed. File size: {new FileInfo(filePath).Length} bytes");
         }
 
         /// <summary>
-        /// Download using HttpClient (fallback)
+        /// Download using curl.exe with TLS 1.2 forced
+        /// </summary>
+        private async Task DownloadWithCurlAsync(string url, string filePath, IProgress<int>? progress, int baseProgress, int maxProgress)
+        {
+            Logger.Log("Using curl.exe for download with TLS 1.2");
+            
+            string? directory = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            // Force TLS 1.2, disable certificate revocation check
+            var psi = new ProcessStartInfo
+            {
+                FileName = "curl.exe",
+                Arguments = $"--tlsv1.2 --tls-max 1.2 --location --fail --silent --show-error --ssl-no-revoke --output \"{filePath}\" --retry 3 --retry-delay 2 --connect-timeout 60 --max-time 3600 \"{url}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+
+            using var process = new Process { StartInfo = psi };
+            
+            var errorBuilder = new System.Text.StringBuilder();
+            process.ErrorDataReceived += (s, e) => { if (e.Data != null) errorBuilder.AppendLine(e.Data); };
+            
+            process.Start();
+            process.BeginErrorReadLine();
+
+            var progressTask = Task.Run(async () =>
+            {
+                int progressValue = baseProgress;
+                while (!process.HasExited)
+                {
+                    await Task.Delay(1000);
+                    
+                    if (File.Exists(filePath))
+                    {
+                        try
+                        {
+                            var fileInfo = new FileInfo(filePath);
+                            progressValue = Math.Min(maxProgress - 5, progressValue + 2);
+                            progress?.Report(progressValue);
+                        }
+                        catch { }
+                    }
+                }
+            });
+
+            bool exited = await Task.Run(() => process.WaitForExit(60 * 60 * 1000));
+            
+            if (!exited)
+            {
+                try { process.Kill(); } catch { }
+                throw new TimeoutException("curl download timed out after 60 minutes");
+            }
+
+            await progressTask;
+            
+            string error = errorBuilder.ToString();
+            
+            if (process.ExitCode != 0)
+            {
+                Logger.Log($"curl error: {error}");
+                throw new Exception($"curl download failed with exit code {process.ExitCode}: {error}");
+            }
+
+            if (!File.Exists(filePath))
+            {
+                throw new Exception("Download completed but file not found");
+            }
+
+            var finalFileInfo = new FileInfo(filePath);
+            if (finalFileInfo.Length == 0)
+            {
+                throw new Exception("Downloaded file is empty");
+            }
+
+            progress?.Report(maxProgress);
+            Logger.Log($"curl download completed. File size: {finalFileInfo.Length} bytes");
+        }
+
+        /// <summary>
+        /// Download using HttpClient with chunked/range requests for better reliability
+        /// </summary>
+        private async Task DownloadWithChunkedHttpClientAsync(string url, string filePath, IProgress<int>? progress, int baseProgress, int maxProgress)
+        {
+            Logger.Log("Using chunked HttpClient for download");
+            
+            ResetHttpClient();
+            
+            string? directory = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            // First, get the content length
+            long? totalSize = await GetContentLengthAsync(url);
+            
+            if (!totalSize.HasValue || totalSize.Value <= 0)
+            {
+                // Fall back to regular download if we can't get content length
+                Logger.Log("Cannot determine content length, falling back to regular download");
+                await DownloadWithHttpClientAsync(url, filePath, progress, baseProgress, maxProgress);
+                return;
+            }
+
+            Logger.Log($"Total file size: {totalSize.Value} bytes");
+
+            const long chunkSize = 5 * 1024 * 1024; // 5MB chunks
+            long downloaded = 0;
+            int chunkNumber = 0;
+
+            await using var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true);
+
+            while (downloaded < totalSize.Value)
+            {
+                long rangeStart = downloaded;
+                long rangeEnd = Math.Min(downloaded + chunkSize - 1, totalSize.Value - 1);
+                
+                Logger.Log($"Downloading chunk {++chunkNumber}: bytes {rangeStart}-{rangeEnd}");
+
+                using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(rangeStart, rangeEnd);
+                request.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoCache = true, NoStore = true };
+
+                int chunkRetries = 3;
+                bool chunkSuccess = false;
+
+                for (int retry = 0; retry < chunkRetries && !chunkSuccess; retry++)
+                {
+                    try
+                    {
+                        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                        
+                        if (response.StatusCode != System.Net.HttpStatusCode.PartialContent && 
+                            response.StatusCode != System.Net.HttpStatusCode.OK)
+                        {
+                            throw new Exception($"Unexpected status code: {response.StatusCode}");
+                        }
+
+                        using var stream = await response.Content.ReadAsStreamAsync(cts.Token);
+                        byte[] buffer = new byte[32768];
+                        int bytesRead;
+
+                        while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cts.Token)) > 0)
+                        {
+                            await fileStream.WriteAsync(buffer, 0, bytesRead, cts.Token);
+                            downloaded += bytesRead;
+
+                            int currentProgress = baseProgress + (int)((downloaded * (maxProgress - baseProgress)) / totalSize.Value);
+                            progress?.Report(currentProgress);
+                        }
+
+                        chunkSuccess = true;
+                    }
+                    catch (Exception ex) when (retry < chunkRetries - 1)
+                    {
+                        Logger.Log($"Chunk {chunkNumber} failed (retry {retry + 1}): {ex.Message}");
+                        await Task.Delay(2000 * (retry + 1));
+                        
+                        // Reset file position for retry
+                        fileStream.Position = rangeStart;
+                        downloaded = rangeStart;
+                    }
+                }
+
+                if (!chunkSuccess)
+                {
+                    throw new Exception($"Failed to download chunk {chunkNumber} after {chunkRetries} retries");
+                }
+            }
+
+            await fileStream.FlushAsync();
+            
+            Logger.Log($"Chunked download completed. Total downloaded: {downloaded} bytes");
+        }
+
+        /// <summary>
+        /// Download using HttpClient (standard fallback)
         /// </summary>
         private async Task DownloadWithHttpClientAsync(string url, string filePath, IProgress<int>? progress, int baseProgress, int maxProgress)
         {
@@ -382,12 +504,18 @@ try {{
             
             ResetHttpClient();
             
+            string? directory = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+            
             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(60));
             
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoCache = true, NoStore = true };
             request.Headers.Connection.Clear();
-            request.Headers.Connection.Add("close");
+            request.Headers.Connection.Add("keep-alive");
             
             using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
             response.EnsureSuccessStatusCode();
