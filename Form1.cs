@@ -985,7 +985,37 @@ namespace Launcher
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error during installation: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                // Log full exception details
+                Logger.Log($"Installation error: {ex.GetType().Name}: {ex.Message}");
+                Logger.Log($"Stack trace: {ex.StackTrace}");
+                
+                // Log all inner exceptions
+                var inner = ex.InnerException;
+                int depth = 0;
+                while (inner != null && depth < 10)
+                {
+                    Logger.Log($"Inner exception [{depth}]: {inner.GetType().Name}: {inner.Message}");
+                    Logger.Log($"Inner stack trace [{depth}]: {inner.StackTrace}");
+                    inner = inner.InnerException;
+                    depth++;
+                }
+                
+                // Build detailed error message for user
+                string errorDetails = $"Error during installation: {ex.Message}";
+                if (ex.InnerException != null)
+                {
+                    errorDetails += $"\n\nInner exception: {ex.InnerException.Message}";
+                }
+                
+                // Add hint for common issues
+                if (ex.Message.Contains("decryption", StringComparison.OrdinalIgnoreCase) ||
+                    ex.Message.Contains("TLS", StringComparison.OrdinalIgnoreCase) ||
+                    ex.Message.Contains("SSL", StringComparison.OrdinalIgnoreCase))
+                {
+                    errorDetails += "\n\nThis appears to be a TLS/SSL connection issue. Please check your internet connection and try again.";
+                }
+                
+                MessageBox.Show(errorDetails, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             finally
             {
