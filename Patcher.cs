@@ -20,7 +20,7 @@ namespace Launcher
             _config = config;
         }
 
-        public async Task ApplyPatchAsync(string localVersion, string newVersion, IProgress<int> progress)
+        public async Task ApplyPatchAsync(string localVersion, string newVersion, IProgress<int> progress, Action<string>? statusCallback = null)
         {
             // Use the actual target version directly, not an incremented version
             string cabUrl = $"{_config.ServerAddress}/microvolts/{newVersion}/microvolts-{localVersion}-{newVersion}.cab";
@@ -30,9 +30,11 @@ namespace Launcher
 
             try
             {
-                await _downloader.DownloadFileAsync(cabUrl, cabPath, progress, 0, 100);
+                statusCallback?.Invoke("Downloading patch files...");
+                await _downloader.DownloadFileAsync(cabUrl, cabPath, progress, 0, 100, statusCallback);
                 Logger.Log($"CAB file downloaded to {cabPath}");
 
+                statusCallback?.Invoke("Downloading patch metadata...");
                 string xmlUrl = cabUrl.Replace(".cab", ".xml");
                 string? xmlContent = await _downloader.DownloadStringAsync(xmlUrl);
                 if (xmlContent == null)
@@ -42,9 +44,11 @@ namespace Launcher
 
                 var checksums = ParseChecksums(xmlContent);
 
+                statusCallback?.Invoke("Extracting patch files...");
                 await UnpackCabAsync(cabPath, tempDir);
                 progress.Report(100);
 
+                statusCallback?.Invoke("Applying patch files...");
                 await ReplaceFilesAsync(tempDir, checksums);
             }
             finally

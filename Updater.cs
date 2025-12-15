@@ -19,7 +19,7 @@ namespace Launcher
             _patcher = patcher;
         }
 
-        public async Task<bool> CheckForUpdatesAsync(IProgress<int> progress)
+        public async Task<bool> CheckForUpdatesAsync(IProgress<int> progress, Action<string>? statusCallback = null)
         {
             if (!NetworkInterface.GetIsNetworkAvailable())
             {
@@ -27,6 +27,7 @@ namespace Launcher
             }
 
             // Check disk space
+            statusCallback?.Invoke("Checking disk space...");
             string installPath = AppDomain.CurrentDomain.BaseDirectory;
             string? pathRoot = Path.GetPathRoot(installPath);
             if (pathRoot == null)
@@ -39,14 +40,17 @@ namespace Launcher
                 throw new Exception("Insufficient disk space for updates. Please free up space and try again.");
             }
 
+            statusCallback?.Invoke("Checking launcher updates...");
             bool patchLauncherUpdated = await UpdatePatchLauncherAsync(progress);
             if (!patchLauncherUpdated)
             {
                 progress.Report(100);
             }
 
-            await UpdatePatchesAsync(progress);
+            statusCallback?.Invoke("Checking game updates...");
+            await UpdatePatchesAsync(progress, statusCallback);
 
+            statusCallback?.Invoke("Verifying game data...");
             await CheckCgdDipAsync();
 
             return true;
@@ -75,7 +79,7 @@ namespace Launcher
             return true;
         }
 
-        private async Task UpdatePatchesAsync(IProgress<int> progress)
+        private async Task UpdatePatchesAsync(IProgress<int> progress, Action<string>? statusCallback = null)
         {
             string? remotePatch = await _downloader.DownloadStringAsync(_config.PatchUrl);
             if (remotePatch == null) return;
@@ -96,20 +100,24 @@ namespace Launcher
             if (!string.IsNullOrEmpty(localVersion) && string.Compare(newVersion, localVersion) > 0)
             {
                 Logger.Log($"New version available, applying patch from {localVersion} to {newVersion}");
-                await _patcher.ApplyPatchAsync(localVersion, newVersion, progress);
-                await _downloader.DownloadFileAsync(_config.PatchUrl, localPatchPath, progress, 0, 100);
+                statusCallback?.Invoke($"Applying patch {localVersion} → {newVersion}...");
+                await _patcher.ApplyPatchAsync(localVersion, newVersion, progress, statusCallback);
+                statusCallback?.Invoke("Downloading patch info...");
+                await _downloader.DownloadFileAsync(_config.PatchUrl, localPatchPath, progress, 0, 100, statusCallback);
             }
             // Same version - check if patch content changed by checksum
             else if (!string.IsNullOrEmpty(localVersion) && localVersion == newVersion)
             {
                 uint localChecksum = Adler32(System.Text.Encoding.UTF8.GetBytes(localContent));
                 uint remoteChecksum = Adler32(System.Text.Encoding.UTF8.GetBytes(remotePatch));
-                
+
                 if (localChecksum != remoteChecksum)
                 {
                     Logger.Log($"Same version ({localVersion}) but patch.ini content changed. Local checksum: {localChecksum:x8}, Remote checksum: {remoteChecksum:x8}. Re-applying patch...");
-                    await _patcher.ApplyPatchAsync(localVersion, newVersion, progress);
-                    await _downloader.DownloadFileAsync(_config.PatchUrl, localPatchPath, progress, 0, 100);
+                    statusCallback?.Invoke($"Re-applying patch {localVersion}...");
+                    await _patcher.ApplyPatchAsync(localVersion, newVersion, progress, statusCallback);
+                    statusCallback?.Invoke("Downloading patch info...");
+                    await _downloader.DownloadFileAsync(_config.PatchUrl, localPatchPath, progress, 0, 100, statusCallback);
                 }
                 else
                 {
@@ -120,7 +128,8 @@ namespace Launcher
             else
             {
                 // No local version, just download the patch.ini
-                await _downloader.DownloadFileAsync(_config.PatchUrl, localPatchPath, progress, 0, 100);
+                statusCallback?.Invoke("Downloading patch info...");
+                await _downloader.DownloadFileAsync(_config.PatchUrl, localPatchPath, progress, 0, 100, statusCallback);
             }
         }
 

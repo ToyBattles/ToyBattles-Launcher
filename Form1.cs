@@ -954,8 +954,19 @@ namespace Launcher
             {
                 if (!await CheckDiskSpaceAsync(installPath, tempDir)) return;
 
-                var progress = new Progress<int>(value => UpdateProgress(value, $"Installing... ({value}%)"));
-                await _downloader.DownloadFileAsync(_config.FullZipUrl, zipPath, progress, 0, 50);
+                string currentStatus = "Installing...";
+                var progress = new Progress<int>(value => UpdateProgress(value, $"{currentStatus} ({value}%)"));
+                Action<string> statusCallback = status =>
+                {
+                    currentStatus = status;
+                    // Force an immediate UI update with current progress
+                    if (InvokeRequired)
+                        Invoke(new Action(() => _progressLabel.Text = $"{status} ({progressBar1.Value}%)"));
+                    else
+                        _progressLabel.Text = $"{status} ({progressBar1.Value}%)";
+                };
+                
+                await _downloader.DownloadFileAsync(_config.FullZipUrl, zipPath, progress, 0, 50, statusCallback);
 
                 string extractDir = Path.Combine(tempDir, "extracted");
                 Directory.CreateDirectory(extractDir);

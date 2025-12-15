@@ -143,9 +143,9 @@ namespace Launcher
             }
         }
 
-        public async Task DownloadFileAsync(string url, string filePath, IProgress<int>? progress = null, int baseProgress = 0, int maxProgress = 100)
+        public async Task DownloadFileAsync(string url, string filePath, IProgress<int>? progress = null, int baseProgress = 0, int maxProgress = 100, Action<string>? statusCallback = null)
         {
-            const int maxRetries = 7;
+            const int maxRetries = 6;
             Exception? lastException = null;
 
             for (int attempt = 1; attempt <= maxRetries; attempt++)
@@ -159,27 +159,30 @@ namespace Launcher
                         try { File.Delete(filePath); } catch { }
                     }
 
-                    // Try BITS first (most reliable on Windows 11, handles TLS natively)
+                    string methodName;
+
+                    // Try chunked HttpClient download first (works on both Windows 10 and 11)
                     if (attempt <= 2)
                     {
-                        await DownloadWithBitsAsync(url, filePath, progress, baseProgress, maxProgress);
-                    }
-                    // Then try curl.exe with TLS 1.2
-                    else if (attempt <= 4)
-                    {
-                        await DownloadWithCurlAsync(url, filePath, progress, baseProgress, maxProgress);
-                    }
-                    // Then try chunked HttpClient download
-                    else if (attempt <= 6)
-                    {
+                        methodName = "Chunked Download";
+                        statusCallback?.Invoke($"Downloading via {methodName} (attempt {attempt}/{maxRetries})...");
                         await DownloadWithChunkedHttpClientAsync(url, filePath, progress, baseProgress, maxProgress);
                     }
-                    // Finally try standard HttpClient
-                    else
+                    // Then try standard HttpClient
+                    else if (attempt <= 4)
                     {
+                        methodName = "HttpClient";
+                        statusCallback?.Invoke($"Downloading via {methodName} (attempt {attempt}/{maxRetries})...");
                         await DownloadWithHttpClientAsync(url, filePath, progress, baseProgress, maxProgress);
                     }
-                    
+                    // Finally try curl.exe with TLS 1.2
+                    else
+                    {
+                        methodName = "curl (TLS 1.2)";
+                        statusCallback?.Invoke($"Downloading via {methodName} (attempt {attempt}/{maxRetries})...");
+                        await DownloadWithCurlAsync(url, filePath, progress, baseProgress, maxProgress);
+                    }
+
                     RemoveZoneIdentifier(filePath);
                     Logger.Log($"Download completed: {filePath}");
                     return;
@@ -188,8 +191,9 @@ namespace Launcher
                 {
                     lastException = ex;
                     LogException(ex, url, attempt, maxRetries);
-                    
+
                     int delayMs = 2000 * attempt;
+                    statusCallback?.Invoke($"Retrying in {delayMs / 1000}s... (attempt {attempt + 1}/{maxRetries})");
                     Logger.Log($"Retrying in {delayMs / 1000} seconds...");
                     await Task.Delay(delayMs);
                 }
@@ -203,114 +207,6 @@ namespace Launcher
             throw lastException ?? new Exception($"Failed to download {url} after {maxRetries} attempts");
         }
 
-        /// <summary>
-        /// Download using BITS (Background Intelligent Transfer Service) - most reliable on Windows 11
-        /// </summary>
-        private async Task DownloadWithBitsAsync(string url, string filePath, IProgress<int>? progress, int baseProgress, int maxProgress)
-        {
-            Logger.Log("Using BITS for download");
-            
-            string? directory = Path.GetDirectoryName(filePath);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
-
-            string escapedUrl = url.Replace("'", "''");
-            string escapedPath = filePath.Replace("'", "''");
-            string jobName = $"LauncherDownload_{Guid.NewGuid():N}";
-            
-            // Use BITS with TLS 1.2 - BITS handles certificate validation properly on Windows 11
-            string script = $@"
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-
-# Force TLS 1.2
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-[Net.ServicePointManager]::CheckCertificateRevocationList = $false
-
-try {{
-    # Use Start-BitsTransfer with security policy set
-    $job = Start-BitsTransfer -Source '{escapedUrl}' -Destination '{escapedPath}' -Priority Foreground -DisplayName '{jobName}' -Asynchronous
-    
-    while (($job.JobState -eq 'Transferring') -or ($job.JobState -eq 'Connecting')) {{
-        Start-Sleep -Milliseconds 500
-    }}
-    
-    if ($job.JobState -eq 'Transferred') {{
-        Complete-BitsTransfer -BitsJob $job
-    }} else {{
-        $errorMsg = $job.ErrorDescription
-        Remove-BitsTransfer -BitsJob $job -ErrorAction SilentlyContinue
-        throw ""BITS transfer failed: $errorMsg""
-    }}
-}} catch {{
-    throw $_.Exception.Message
-}}
-";
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"{script.Replace("\"", "\\\"")}\"",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-
-            using var process = new Process { StartInfo = psi };
-            
-            var errorBuilder = new System.Text.StringBuilder();
-            process.ErrorDataReceived += (s, e) => { if (e.Data != null) errorBuilder.AppendLine(e.Data); };
-            
-            process.Start();
-            process.BeginErrorReadLine();
-
-            var progressTask = Task.Run(async () =>
-            {
-                int progressValue = baseProgress;
-                while (!process.HasExited)
-                {
-                    await Task.Delay(500);
-                    if (File.Exists(filePath))
-                    {
-                        try
-                        {
-                            var fileInfo = new FileInfo(filePath);
-                            progressValue = Math.Min(maxProgress - 5, progressValue + 2);
-                            progress?.Report(progressValue);
-                        }
-                        catch { }
-                    }
-                }
-            });
-
-            bool exited = await Task.Run(() => process.WaitForExit(60 * 60 * 1000));
-            
-            if (!exited)
-            {
-                try { process.Kill(); } catch { }
-                throw new TimeoutException("BITS download timed out");
-            }
-
-            await progressTask;
-            
-            if (process.ExitCode != 0)
-            {
-                string error = errorBuilder.ToString();
-                Logger.Log($"BITS error: {error}");
-                throw new Exception($"BITS download failed: {error}");
-            }
-
-            if (!File.Exists(filePath) || new FileInfo(filePath).Length == 0)
-            {
-                throw new Exception("BITS download failed - file not found or empty");
-            }
-
-            progress?.Report(maxProgress);
-            Logger.Log($"BITS download completed. File size: {new FileInfo(filePath).Length} bytes");
-        }
 
         /// <summary>
         /// Download using curl.exe with TLS 1.2 forced

@@ -18,7 +18,7 @@ namespace Launcher
             _downloader = downloader;
         }
 
-        public async Task RepairAsync(IProgress<int> progress)
+        public async Task RepairAsync(IProgress<int> progress, Action<string>? statusCallback = null)
         {
             string tempDir = Path.Combine(Path.GetTempPath(), $"LauncherRepair_{Guid.NewGuid()}");
             Directory.CreateDirectory(tempDir);
@@ -27,6 +27,7 @@ namespace Launcher
             try
             {
                 // Check disk space
+                statusCallback?.Invoke("Checking disk space...");
                 long? zipSize = await _downloader.GetContentLengthAsync(_config.FullZipUrl);
                 if (zipSize.HasValue)
                 {
@@ -48,12 +49,14 @@ namespace Launcher
                     }
                 }
 
-                await _downloader.DownloadFileAsync(_config.FullZipUrl, zipPath, progress, 0, 100);
+                await _downloader.DownloadFileAsync(_config.FullZipUrl, zipPath, progress, 0, 100, statusCallback);
 
+                statusCallback?.Invoke("Extracting files...");
                 string extractDir = Path.Combine(tempDir, "extracted");
                 Directory.CreateDirectory(extractDir);
                 ZipFile.ExtractToDirectory(zipPath, extractDir);
 
+                statusCallback?.Invoke("Closing game if running...");
                 var processes = Process.GetProcessesByName("MicroVolts");
                 foreach (var proc in processes)
                 {
@@ -81,6 +84,7 @@ namespace Launcher
                     }
                 }
 
+                statusCallback?.Invoke("Replacing game files...");
                 string[] extractedFiles = Directory.GetFiles(extractDir, "*", SearchOption.AllDirectories);
                 foreach (string file in extractedFiles)
                 {
@@ -102,8 +106,9 @@ namespace Launcher
                     }
                 }
 
+                statusCallback?.Invoke("Downloading patch info...");
                 string localPatchPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "patch.ini");
-                await _downloader.DownloadFileAsync(_config.PatchUrl, localPatchPath, progress, 0, 100);
+                await _downloader.DownloadFileAsync(_config.PatchUrl, localPatchPath, progress, 0, 100, statusCallback);
 
                 // Install C++ development tools if XignCode issue was detected
                 if (installCppTools)
