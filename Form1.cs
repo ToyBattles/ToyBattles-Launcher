@@ -186,20 +186,20 @@ namespace Launcher
             // bgPicture is at (2, -1), so we need to adjust positions when moving to bgPicture
             int offsetX = 2;
             int offsetY = -1;
-            
+
             // Move buttons to bgPicture for proper transparency
             // exitButton: Designer position (975, 48)
             exitButton.Parent = bgPicture;
             exitButton.Location = new Point(975 - offsetX, 48 - offsetY);
-            
+
             // DiscordButton: Designer position (932, 462)
             DiscordButton.Parent = bgPicture;
             DiscordButton.Location = new Point(932 - offsetX, 462 - offsetY);
-            
+
             // WebsiteButton: Designer position (885, 462)
             WebsiteButton.Parent = bgPicture;
             WebsiteButton.Location = new Point(885 - offsetX, 462 - offsetY);
-            
+
             // RepairButton: Designer position (838, 462)
             RepairButton.Parent = bgPicture;
             RepairButton.Location = new Point(838 - offsetX, 462 - offsetY);
@@ -231,7 +231,7 @@ namespace Launcher
             // bgPicture is at (2, -1), so we need to adjust positions
             int offsetX = 2;
             int offsetY = -1;
-            
+
             // Time label - add to bgPicture for proper transparency
             var label = new Label
             {
@@ -280,7 +280,7 @@ namespace Launcher
             trayIcon.Dispose();
             _notificationCts?.Cancel();
             _notificationCts?.Dispose();
-            
+
             // Dispose cached images
             _startNormalImage?.Dispose();
             _startDisabledImage?.Dispose();
@@ -351,7 +351,7 @@ namespace Launcher
                 _updateCheckTimer.Start();
             }
 
-            trayIcon.ShowBalloonTip(3000, "ToyBattles Launcher", 
+            trayIcon.ShowBalloonTip(3000, "ToyBattles Launcher",
                 "Launcher is running in the background. Double-click to open.", ToolTipIcon.Info);
         }
 
@@ -424,11 +424,11 @@ namespace Launcher
                 // Start both tasks concurrently
                 var remotePatchTask = _downloader.DownloadStringAsync(_config.PatchUrl);
                 var localContentTask = File.ReadAllTextAsync(localPatchPath);
-                
+
                 // Await both tasks
                 string? remotePatch = await remotePatchTask;
                 string localContent = await localContentTask;
-                
+
                 if (remotePatch == null) return false;
 
                 string localVersion = ParseVersionFromIni(localContent);
@@ -470,7 +470,7 @@ namespace Launcher
             {
                 var progress = new Progress<int>(value => UpdateProgress(value, $"Updating... ({value}%)"));
                 bool updated = await _updater.CheckForUpdatesAsync(progress);
-                
+
                 if (updated)
                 {
                     UpdateProgress(100, "Ready to launch");
@@ -499,15 +499,15 @@ namespace Launcher
 
             if (baseDir == root || baseDir.Equals(desktopPath, StringComparison.OrdinalIgnoreCase))
             {
-                MessageBox.Show(this, "Please move the launcher to a folder before installing the game.", 
+                MessageBox.Show(this, "Please move the launcher to a folder before installing the game.",
                     "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 UpdateProgress(100, "Failed to Start - Please move the launcher to a folder.");
                 SetStartButtonState(false);
             }
             else
             {
-                var result = MessageBox.Show(this, 
-                    "ToyBattles is not installed. Do you want to install ToyBattles? This is the first time installing the game.", 
+                var result = MessageBox.Show(this,
+                    "ToyBattles is not installed. Do you want to install ToyBattles? This is the first time installing the game.",
                     "Install Game", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
 
                 if (result == DialogResult.Yes)
@@ -589,7 +589,7 @@ namespace Launcher
                 AutoSize = true
             };
 
-            var yesButton = CreateNotificationButton("Update Now", Color.FromArgb(0, 122, 204), 
+            var yesButton = CreateNotificationButton("Update Now", Color.FromArgb(0, 122, 204),
                 new Point(120, 58), async () =>
             {
                 _notificationCts?.Cancel();
@@ -597,7 +597,7 @@ namespace Launcher
                 await StartUpdateProcessAsync();
             });
 
-            var noButton = CreateNotificationButton("Later", Color.FromArgb(60, 60, 60), 
+            var noButton = CreateNotificationButton("Later", Color.FromArgb(60, 60, 60),
                 new Point(230, 58), () =>
             {
                 _notificationCts?.Cancel();
@@ -828,10 +828,10 @@ namespace Launcher
             }
         }
 
-        private void StartButton_MouseEnter(object? sender, EventArgs e) => 
+        private void StartButton_MouseEnter(object? sender, EventArgs e) =>
             startButton.Image = _startClickImage;
 
-        private void StartButton_MouseLeave(object? sender, EventArgs e) => 
+        private void StartButton_MouseLeave(object? sender, EventArgs e) =>
             startButton.Image = _startNormalImage;
 
         private void StartButton_Click(object? sender, EventArgs e)
@@ -839,36 +839,36 @@ namespace Launcher
             if (startButton.Enabled) StartGame();
         }
 
-        private void ExitButton_MouseEnter(object? sender, EventArgs e) => 
+        private void ExitButton_MouseEnter(object? sender, EventArgs e) =>
             exitButton.Image = _exitClickImage;
 
-        private void ExitButton_MouseLeave(object? sender, EventArgs e) => 
+        private void ExitButton_MouseLeave(object? sender, EventArgs e) =>
             exitButton.Image = _exitNormalImage;
 
         private void ExitButton_Click(object? sender, EventArgs e) => MinimizeToTray();
 
-        private void DiscordButton_MouseEnter(object? sender, EventArgs e) => 
+        private void DiscordButton_MouseEnter(object? sender, EventArgs e) =>
             DiscordButton.Image = _discordClickImage;
 
-        private void DiscordButton_MouseLeave(object? sender, EventArgs e) => 
+        private void DiscordButton_MouseLeave(object? sender, EventArgs e) =>
             DiscordButton.Image = _discordNormalImage;
 
-        private void DiscordButton_Click(object? sender, EventArgs e) => 
+        private void DiscordButton_Click(object? sender, EventArgs e) =>
             OpenUrl(Configuration.DiscordUrl);
 
-        private void WebsiteButton_MouseEnter(object? sender, EventArgs e) => 
+        private void WebsiteButton_MouseEnter(object? sender, EventArgs e) =>
             WebsiteButton.Image = _webClickImage;
 
-        private void WebsiteButton_MouseLeave(object? sender, EventArgs e) => 
+        private void WebsiteButton_MouseLeave(object? sender, EventArgs e) =>
             WebsiteButton.Image = _webNormalImage;
 
-        private void WebsiteButton_Click(object? sender, EventArgs e) => 
+        private void WebsiteButton_Click(object? sender, EventArgs e) =>
             OpenUrl(Configuration.WebsiteUrl);
 
-        private void RepairButton_MouseEnter(object? sender, EventArgs e) => 
+        private void RepairButton_MouseEnter(object? sender, EventArgs e) =>
             RepairButton.Image = _repairClickImage;
 
-        private void RepairButton_MouseLeave(object? sender, EventArgs e) => 
+        private void RepairButton_MouseLeave(object? sender, EventArgs e) =>
             RepairButton.Image = _repairNormalImage;
 
         private async void RepairButton_Click(object? sender, EventArgs e)
@@ -877,8 +877,8 @@ namespace Launcher
 
             SetRepairButtonState(false);
 
-            var result = MessageBox.Show(this, 
-                "Are you sure you want to repair the game? This will redownload all game files.", 
+            var result = MessageBox.Show(this,
+                "Are you sure you want to repair the game? This will redownload all game files.",
                 "Confirm Repair", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
 
             if (result != DialogResult.Yes)
@@ -907,7 +907,7 @@ namespace Launcher
             }
         }
 
-        private static void OpenUrl(string url) => 
+        private static void OpenUrl(string url) =>
             Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
 
         #endregion
@@ -916,7 +916,7 @@ namespace Launcher
 
         private void StartGame()
         {
-            string[] exeFiles = Directory.GetFiles(AppDomain.CurrentDomain.BaseDirectory, 
+            string[] exeFiles = Directory.GetFiles(AppDomain.CurrentDomain.BaseDirectory,
                 "MicroVolts.exe", SearchOption.AllDirectories);
 
             if (exeFiles.Length == 0)
@@ -965,7 +965,7 @@ namespace Launcher
                     else
                         _progressLabel.Text = $"{status} ({progressBar1.Value}%)";
                 };
-                
+
                 await _downloader.DownloadFileAsync(_config.FullZipUrl, zipPath, progress, 0, 50, statusCallback);
 
                 string extractDir = Path.Combine(tempDir, "extracted");
@@ -999,7 +999,7 @@ namespace Launcher
                 // Log full exception details
                 Logger.Log($"Installation error: {ex.GetType().Name}: {ex.Message}");
                 Logger.Log($"Stack trace: {ex.StackTrace}");
-                
+
                 // Log all inner exceptions
                 var inner = ex.InnerException;
                 int depth = 0;
@@ -1010,14 +1010,14 @@ namespace Launcher
                     inner = inner.InnerException;
                     depth++;
                 }
-                
+
                 // Build detailed error message for user
                 string errorDetails = $"Error during installation: {ex.Message}";
                 if (ex.InnerException != null)
                 {
                     errorDetails += $"\n\nInner exception: {ex.InnerException.Message}";
                 }
-                
+
                 // Add hint for common issues
                 if (ex.Message.Contains("decryption", StringComparison.OrdinalIgnoreCase) ||
                     ex.Message.Contains("TLS", StringComparison.OrdinalIgnoreCase) ||
@@ -1025,7 +1025,7 @@ namespace Launcher
                 {
                     errorDetails += "\n\nThis appears to be a TLS/SSL connection issue. Please check your internet connection and try again.";
                 }
-                
+
                 MessageBox.Show(errorDetails, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             finally
@@ -1047,7 +1047,7 @@ namespace Launcher
 
             if (tempDrive.AvailableFreeSpace < requiredTemp || installDrive.AvailableFreeSpace < requiredInstall)
             {
-                MessageBox.Show("Insufficient disk space for installation. Please free up space and try again.", 
+                MessageBox.Show("Insufficient disk space for installation. Please free up space and try again.",
                     "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return false;
             }
@@ -1121,7 +1121,7 @@ namespace Launcher
         private static void SetCompatibilitySettings(string exePath)
         {
             const string keyPath = @"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers";
-            using var key = Registry.CurrentUser.OpenSubKey(keyPath, true) ?? 
+            using var key = Registry.CurrentUser.OpenSubKey(keyPath, true) ??
                            Registry.CurrentUser.CreateSubKey(keyPath);
 
             if (key == null) return;

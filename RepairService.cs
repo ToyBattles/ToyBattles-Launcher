@@ -125,6 +125,30 @@ namespace Launcher
                         };
                         Process.Start(psi);
                         Logger.Log("Started installation of Visual Studio Build Tools with Desktop development with C++ workload for XignCode fix.");
+
+                        // Download and install X86 Redistributables
+                        string x86Path = Path.Combine(tempDir, "vc_redist.x86.exe");
+                        await _downloader.DownloadFileAsync("https://aka.ms/vc14/vc_redist.x86.exe", x86Path, progress, 0, 100, statusCallback);
+                        ProcessStartInfo psiX86 = new(x86Path)
+                        {
+                            Arguments = "/quiet /norestart",
+                            UseShellExecute = true,
+                            Verb = "runas"
+                        };
+                        Process.Start(psiX86);
+                        Logger.Log("Started installation of X86 Redistributables for XignCode fix.");
+
+                        // Download and install X64 Redistributables
+                        string x64Path = Path.Combine(tempDir, "vc_redist.x64.exe");
+                        await _downloader.DownloadFileAsync("https://aka.ms/vc14/vc_redist.x64.exe", x64Path, progress, 0, 100, statusCallback);
+                        ProcessStartInfo psiX64 = new(x64Path)
+                        {
+                            Arguments = "/quiet /norestart",
+                            UseShellExecute = true,
+                            Verb = "runas"
+                        };
+                        Process.Start(psiX64);
+                        Logger.Log("Started installation of X64 Redistributables for XignCode fix.");
                     }
                     catch (Exception ex)
                     {

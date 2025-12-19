@@ -158,7 +158,7 @@
             // 
             trayContextMenu.Items.AddRange(new ToolStripItem[] { showMenuItem, runInBackgroundMenuItem, stopLauncherMenuItem });
             trayContextMenu.Name = "trayContextMenu";
-            trayContextMenu.Size = new Size(176, 76);
+            trayContextMenu.Size = new Size(176, 70);
             // 
             // showMenuItem
             // 
