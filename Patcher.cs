@@ -45,7 +45,7 @@ namespace Launcher
                 var checksums = ParseChecksums(xmlContent);
 
                 statusCallback?.Invoke("Extracting patch files...");
-                await UnpackCabAsync(cabPath, tempDir);
+                await UnpackCabAsync(cabPath, tempDir, progress);
                 progress.Report(100);
 
                 statusCallback?.Invoke("Applying patch files...");
@@ -66,42 +66,132 @@ namespace Launcher
                 .ToDictionary(f => f.Name!, f => f.CheckSum!);
         }
 
-        private async Task UnpackCabAsync(string cabPath, string tempDir)
+        private async Task UnpackCabAsync(string cabPath, string tempDir, IProgress<int>? progress = null)
         {
-            var expandProcess = Process.Start(new ProcessStartInfo
+            // Try using expand.exe first
+            try
             {
-                FileName = "expand.exe",
-                Arguments = $"\"{cabPath}\" -F:* \"{tempDir}\"",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            });
-
-            if (expandProcess != null)
-            {
-                Logger.Log("Starting expand.exe...");
-                bool exited = expandProcess.WaitForExit(30000);
-                if (exited)
+                var expandProcess = Process.Start(new ProcessStartInfo
                 {
-                    Logger.Log($"expand.exe exited with code {expandProcess.ExitCode}");
-                    if (expandProcess.ExitCode != 0)
+                    FileName = "expand.exe",
+                    Arguments = $"\"{cabPath}\" -F:* \"{tempDir}\"",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                });
+
+                if (expandProcess != null)
+                {
+                    Logger.Log("Starting expand.exe...");
+                    
+                    // Read output asynchronously to avoid deadlocks
+                    var outputTask = expandProcess.StandardOutput.ReadToEndAsync();
+                    var errorTask = expandProcess.StandardError.ReadToEndAsync();
+                    
+                    // Report progress during extraction
+                    progress?.Report(75); // 75% complete when extraction starts
+                    
+                    int timeout = CalculateExtractionTimeout(cabPath);
+                    Logger.Log($"Using extraction timeout of {timeout / 1000} seconds for CAB file");
+                    
+                    bool exited = expandProcess.WaitForExit(timeout);
+                    
+                    if (exited)
                     {
-                        string error = await expandProcess.StandardError.ReadToEndAsync();
-                        Logger.Log($"expand.exe error: {error}");
-                        throw new Exception($"expand.exe failed with code {expandProcess.ExitCode}: {error}");
+                        Logger.Log($"expand.exe exited with code {expandProcess.ExitCode}");
+                        if (expandProcess.ExitCode != 0)
+                        {
+                            string error = await errorTask;
+                            string output = await outputTask;
+                            Logger.Log($"expand.exe output: {output}");
+                            Logger.Log($"expand.exe error: {error}");
+                            throw new Exception($"expand.exe failed with code {expandProcess.ExitCode}: {error}");
+                        }
+                        else
+                        {
+                            string output = await outputTask;
+                            Logger.Log($"expand.exe output: {output}");
+                            progress?.Report(90); // 90% complete after successful extraction
+                        }
+                    }
+                    else
+                    {
+                        Logger.Log("expand.exe timed out");
+                        expandProcess.Kill();
+                        throw new Exception("expand.exe timed out while unpacking the patch.");
                     }
                 }
                 else
                 {
-                    Logger.Log("expand.exe timed out");
-                    expandProcess.Kill();
-                    throw new Exception("expand.exe timed out while unpacking the patch.");
+                    throw new Exception("Failed to start expand.exe");
                 }
             }
-            else
+            catch (Exception expandEx)
             {
-                throw new Exception("Failed to start expand.exe");
+                Logger.Log($"expand.exe failed: {expandEx.Message}");
+                Logger.Log("Falling back to .NET ZIP extraction...");
+                
+                // Fallback: try to extract as ZIP (some CAB files can be treated as ZIP)
+                try
+                {
+                    await ExtractAsZipAsync(cabPath, tempDir, progress);
+                }
+                catch (Exception zipEx)
+                {
+                    Logger.Log($"ZIP extraction also failed: {zipEx.Message}");
+                    throw new Exception($"Both expand.exe and ZIP extraction failed. Original error: {expandEx.Message}");
+                }
+            }
+        }
+
+        private Task ExtractAsZipAsync(string cabPath, string tempDir, IProgress<int>? progress = null)
+        {
+            try
+            {
+                // Try to extract as ZIP archive
+                using var archive = ZipFile.OpenRead(cabPath);
+                foreach (var entry in archive.Entries)
+                {
+                    if (!string.IsNullOrEmpty(entry.Name))
+                    {
+                        string fullPath = Path.Combine(tempDir, entry.FullName);
+                        string? dirPath = Path.GetDirectoryName(fullPath);
+                        if (dirPath != null)
+                        {
+                            Directory.CreateDirectory(dirPath);
+                        }
+                        entry.ExtractToFile(fullPath, overwrite: true);
+                    }
+                }
+                progress?.Report(90);
+                Logger.Log("Successfully extracted CAB file using ZIP method");
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Failed to extract as ZIP: {ex.Message}");
+                throw;
+            }
+            return Task.CompletedTask;
+        }
+
+        private int CalculateExtractionTimeout(string cabPath)
+        {
+            try
+            {
+                var fileInfo = new FileInfo(cabPath);
+                long fileSize = fileInfo.Length;
+                
+                // Base timeout of 5 minutes, plus 1 minute per 100MB
+                int baseTimeout = 300000; // 5 minutes
+                int additionalTimeout = (int)(fileSize / (100 * 1024 * 1024)) * 60000; // 1 minute per 100MB
+                
+                return baseTimeout + additionalTimeout;
+            }
+            catch
+            {
+                // Fallback to 10 minutes if we can't determine file size
+                return 600000;
             }
         }
 
