@@ -57,6 +57,178 @@ namespace Launcher
             }
         }
 
+        public async Task<bool> CheckPatchExistsAsync(string fromVersion, string toVersion)
+        {
+            try
+            {
+                string cabUrl = $"{_config.ServerAddress}/microvolts/{toVersion}/microvolts-{fromVersion}-{toVersion}.cab";
+                string xmlUrl = cabUrl.Replace(".cab", ".xml");
+                
+                // Try to download just the XML to check if patch exists
+                string? xmlContent = await _downloader.DownloadStringAsync(xmlUrl);
+                return xmlContent != null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public async Task<List<string>> GetAvailablePatchVersionsAsync(string currentVersion)
+        {
+            var availableVersions = new List<string>();
+            
+            try
+            {
+                // Download the main patch.ini file which contains all available versions
+                string patchUrl = $"{_config.ServerAddress}/microvolts/patch.ini";
+                string? patchContent = await _downloader.DownloadStringAsync(patchUrl);
+                
+                if (patchContent == null)
+                    return availableVersions;
+                
+                // Parse the patch.ini content to extract all version entries
+                var lines = patchContent.Split('\n');
+                bool inPatchSection = false;
+                
+                foreach (var line in lines)
+                {
+                    var trimmed = line.Trim();
+                    
+                    // Check for section headers
+                    if (trimmed == "[patch]")
+                        inPatchSection = true;
+                    else if (trimmed.StartsWith("[") && trimmed != "[patch]")
+                        inPatchSection = false;
+                    
+                    // Parse version entries in the [patch] section
+                    else if (inPatchSection && trimmed.StartsWith("version"))
+                    {
+                        // Extract version value (e.g., "version = ENG_2.0.3.7" -> "ENG_2.0.3.7")
+                        var parts = trimmed.Split('=');
+                        if (parts.Length >= 2)
+                        {
+                            string version = parts[1].Trim();
+                            // Only include versions newer than current
+                            if (string.Compare(version, currentVersion) > 0)
+                            {
+                                availableVersions.Add(version);
+                            }
+                        }
+                    }
+                }
+                
+                // Sort versions in ascending order
+                availableVersions.Sort((a, b) => string.Compare(a, b));
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Error getting available patch versions: {ex.Message}");
+            }
+            
+            return availableVersions;
+        }
+
+        public async Task ApplyStepByStepPatchAsync(string currentVersion, string targetVersion, IProgress<int> progress, Action<string>? statusCallback = null)
+        {
+            Logger.Log($"Starting step-by-step patch from {currentVersion} to {targetVersion}");
+            
+            // Get all available versions between current and target
+            var availableVersions = await GetAvailablePatchVersionsAsync(currentVersion);
+            
+            // Filter to only versions up to target
+            var versionsToApply = availableVersions
+                .Where(v => string.Compare(v, targetVersion) <= 0)
+                .ToList();
+            
+            if (!versionsToApply.Contains(targetVersion))
+            {
+                versionsToApply.Add(targetVersion);
+            }
+            
+            if (versionsToApply.Count == 0)
+            {
+                Logger.Log("No patch versions found to apply");
+                progress.Report(100);
+                return;
+            }
+            
+            string current = currentVersion;
+            int totalSteps = versionsToApply.Count;
+            int currentStep = 0;
+            bool anyPatchApplied = false;
+            
+            foreach (string nextVersion in versionsToApply)
+            {
+                currentStep++;
+                statusCallback?.Invoke($"Checking patch {currentStep}/{totalSteps}: {current} → {nextVersion}");
+                
+                // Check if direct patch exists
+                bool patchExists = await CheckPatchExistsAsync(current, nextVersion);
+                
+                if (!patchExists)
+                {
+                    Logger.Log($"Direct patch from {current} to {nextVersion} not found, skipping");
+                    // Still update current version to continue the chain
+                    current = nextVersion;
+                    continue;
+                }
+                
+                try
+                {
+                    // Calculate progress range for this step
+                    int stepStart = (currentStep - 1) * (100 / totalSteps);
+                    int stepEnd = currentStep * (100 / totalSteps);
+                    
+                    // Create a sub-progress for this step
+                    var stepProgress = new Progress<int>(value =>
+                    {
+                        int overallProgress = stepStart + (value * (stepEnd - stepStart) / 100);
+                        progress.Report(overallProgress);
+                    });
+                    
+                    statusCallback?.Invoke($"Applying patch {currentStep}/{totalSteps}: {current} → {nextVersion}");
+                    await ApplyPatchAsync(current, nextVersion, stepProgress, statusCallback);
+                    current = nextVersion;
+                    anyPatchApplied = true;
+                    
+                    Logger.Log($"Successfully applied patch from {currentVersion} to {nextVersion}");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"Failed to apply patch from {current} to {nextVersion}: {ex.Message}");
+                    
+                    // If patch failed, try to continue with next version anyway
+                    // This allows the system to skip broken patches and continue
+                    current = nextVersion;
+                    
+                    // Report partial progress
+                    progress.Report((currentStep * 100) / totalSteps);
+                }
+            }
+            
+            // Update patch.ini with the final version if any patch was applied
+            if (anyPatchApplied)
+            {
+                try
+                {
+                    // Use the main patch.ini URL, not the version-specific one
+                    string patchUrl = $"{_config.ServerAddress}/microvolts/patch.ini";
+                    string localPatchPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "patch.ini");
+                    
+                    // Download the final patch.ini
+                    await _downloader.DownloadFileAsync(patchUrl, localPatchPath, progress, 0, 100, statusCallback);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"Failed to download final patch.ini: {ex.Message}");
+                }
+            }
+            
+            progress.Report(100);
+            statusCallback?.Invoke($"Patch completed: {currentVersion} → {current}");
+        }
+
         private Dictionary<string, string> ParseChecksums(string xmlContent)
         {
             var doc = XDocument.Parse(xmlContent);
@@ -262,6 +434,31 @@ namespace Launcher
                 b = (b + a) % MOD_ADLER;
             }
             return (b << 16) | a;
+        }
+
+        // Test method for step-by-step patching logic
+        public async Task TestStepByStepPatchingAsync()
+        {
+            Logger.Log("Testing step-by-step patching logic...");
+            
+            // Test version parsing
+            string testVersion = "ENG_2.0.3.5";
+            var versions = await GetAvailablePatchVersionsAsync(testVersion);
+            
+            Logger.Log($"Found {versions.Count} available versions starting from {testVersion}");
+            foreach (var version in versions.Take(5)) // Show first 5
+            {
+                Logger.Log($"  - {version}");
+            }
+            
+            // Test patch existence check
+            if (versions.Count > 0)
+            {
+                bool exists = await CheckPatchExistsAsync(testVersion, versions[0]);
+                Logger.Log($"Patch from {testVersion} to {versions[0]} exists: {exists}");
+            }
+            
+            Logger.Log("Step-by-step patching test completed");
         }
     }
 }

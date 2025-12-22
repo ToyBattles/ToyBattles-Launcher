@@ -99,9 +99,9 @@ namespace Launcher
             // Check if versions differ - need to apply patch
             if (!string.IsNullOrEmpty(localVersion) && string.Compare(newVersion, localVersion) > 0)
             {
-                Logger.Log($"New version available, applying patch from {localVersion} to {newVersion}");
-                statusCallback?.Invoke($"Applying patch {localVersion} → {newVersion}...");
-                await _patcher.ApplyPatchAsync(localVersion, newVersion, progress, statusCallback);
+                Logger.Log($"New version available, applying step-by-step patch from {localVersion} to {newVersion}");
+                statusCallback?.Invoke($"Applying step-by-step patch {localVersion} → {newVersion}...");
+                await _patcher.ApplyStepByStepPatchAsync(localVersion, newVersion, progress, statusCallback);
                 statusCallback?.Invoke("Downloading patch info...");
                 await _downloader.DownloadFileAsync(_config.PatchUrl, localPatchPath, progress, 0, 100, statusCallback);
             }
