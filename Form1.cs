@@ -934,6 +934,14 @@ namespace Launcher
                 var process = Process.Start(psi);
                 if (process != null)
                 {
+                    try
+                    {
+                        process.ProcessorAffinity = new IntPtr(1); // CPU 0 only
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"Failed to set CPU affinity: {ex.Message}");
+                    }
                     MinimizeToTray();
                 }
             }
