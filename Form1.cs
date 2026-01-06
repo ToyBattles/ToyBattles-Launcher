@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Management;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Threading;
@@ -936,7 +937,11 @@ namespace Launcher
                 {
                     try
                     {
-                        process.ProcessorAffinity = new IntPtr(1); // CPU 0 only
+                        string cpuName = GetCpuName();
+                        if (cpuName.Contains("i9", StringComparison.OrdinalIgnoreCase))
+                        {
+                            process.ProcessorAffinity = new IntPtr(0xFF); // First 8 cores
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -1124,6 +1129,18 @@ namespace Launcher
                 b = (b + a) % MOD_ADLER;
             }
             return (b << 16) | a;
+        }
+
+        private static string GetCpuName()
+        {
+            using (var searcher = new ManagementObjectSearcher("select * from Win32_Processor"))
+            {
+                foreach (ManagementObject obj in searcher.Get())
+                {
+                    return obj["Name"]?.ToString() ?? string.Empty;
+                }
+            }
+            return string.Empty;
         }
 
         private static void SetCompatibilitySettings(string exePath)
