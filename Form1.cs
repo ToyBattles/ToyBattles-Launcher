@@ -988,7 +988,7 @@ namespace Launcher
                 {
                     try
                     {
-                        ZipFile.ExtractToDirectory(zipPath, extractDir);
+                        ExtractZipWithOverwrite(zipPath, extractDir);
                     }
                     catch (InvalidDataException ex)
                     {
@@ -1099,7 +1099,23 @@ namespace Launcher
         }
 
         #endregion
-
+        private static void ExtractZipWithOverwrite(string zipPath, string extractDir)
+        {
+            using var archive = ZipFile.OpenRead(zipPath);
+            foreach (var entry in archive.Entries)
+            {
+                if (!string.IsNullOrEmpty(entry.Name))
+                {
+                    string fullPath = Path.Combine(extractDir, entry.FullName);
+                    string? dirPath = Path.GetDirectoryName(fullPath);
+                    if (dirPath != null)
+                    {
+                        Directory.CreateDirectory(dirPath);
+                    }
+                    entry.ExtractToFile(fullPath, overwrite: true);
+                }
+            }
+        }
         #region Utilities
 
         private void TimeTimer_Tick(object? sender, EventArgs e)
