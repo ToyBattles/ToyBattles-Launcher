@@ -323,6 +323,10 @@ namespace Launcher
                 {
                     await HandleFirstInstallAsync();
                 }
+                if (!AreVcRedistInstalled())
+                {
+                    await InstallVcRedistAsync();
+                }
             }
             finally
             {
@@ -1001,6 +1005,8 @@ namespace Launcher
                 string exePath = Path.Combine(installPath, "MicroVolts.exe");
                 SetCompatibilitySettings(exePath);
 
+                await InstallVcRedistAsync(progress, 90, 100, statusCallback);
+
                 UpdateProgress(100, "Installation complete");
                 await Task.Delay(1000);
 
@@ -1174,6 +1180,73 @@ namespace Launcher
             {
                 key.SetValue(exePath, expectedValue, RegistryValueKind.String);
                 Logger.Log("Compatibility settings applied for MicroVolts.exe");
+            }
+        }
+
+        private static bool AreVcRedistInstalled()
+        {
+            try
+            {
+                // Check x86 redist
+                using var keyX86 = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x86");
+                if (keyX86 == null) return false;
+                var installedX86 = keyX86.GetValue("Installed");
+                if (installedX86 == null || (int)installedX86 != 1) return false;
+
+                // Check x64 redist
+                using var keyX64 = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64");
+                if (keyX64 == null) return false;
+                var installedX64 = keyX64.GetValue("Installed");
+                if (installedX64 == null || (int)installedX64 != 1) return false;
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private async Task InstallVcRedistAsync(IProgress<int>? progress = null, int baseProgress = 0, int maxProgress = 100, Action<string>? statusCallback = null)
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"LauncherVcRedist_{Guid.NewGuid()}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                // Download and install X86 Redistributables
+                string x86Path = Path.Combine(tempDir, "vc_redist.x86.exe");
+                statusCallback?.Invoke("Downloading X86 Redistributables...");
+                await _downloader.DownloadFileAsync("https://aka.ms/vc14/vc_redist.x86.exe", x86Path, progress, baseProgress, baseProgress + (maxProgress - baseProgress) / 2, statusCallback);
+                var psiX86 = new ProcessStartInfo(x86Path)
+                {
+                    Arguments = "/quiet /norestart",
+                    UseShellExecute = true,
+                    Verb = "runas"
+                };
+                Process.Start(psiX86)?.WaitForExit();
+                Logger.Log("Installed X86 Redistributables");
+
+                // Download and install X64 Redistributables
+                string x64Path = Path.Combine(tempDir, "vc_redist.x64.exe");
+                statusCallback?.Invoke("Downloading X64 Redistributables...");
+                await _downloader.DownloadFileAsync("https://aka.ms/vc14/vc_redist.x64.exe", x64Path, progress, baseProgress + (maxProgress - baseProgress) / 2, maxProgress, statusCallback);
+                var psiX64 = new ProcessStartInfo(x64Path)
+                {
+                    Arguments = "/quiet /norestart",
+                    UseShellExecute = true,
+                    Verb = "runas"
+                };
+                Process.Start(psiX64)?.WaitForExit();
+                Logger.Log("Installed X64 Redistributables");
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Failed to install VC Redistributables: {ex.Message}");
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
             }
         }
 
