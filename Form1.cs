@@ -276,13 +276,16 @@ namespace Launcher
                 {
                     e.Cancel = true;
                     MinimizeToTray();
+                    return;
                 }
-            }
-            else
-            {
+
                 CleanupResources();
                 base.OnFormClosing(e);
+                return;
             }
+
+            CleanupResources();
+            base.OnFormClosing(e);
         }
 
         private void CleanupResources()
@@ -1006,8 +1009,8 @@ namespace Launcher
             {
                 var psi = new ProcessStartInfo(exePath) { Verb = "runas" };
                 var process = Process.Start(psi);
-                if (process != null)
-                {
+                    if (process != null)
+                    {
                     try
                     {
                         ApplyRecommendedCpuAffinity(process);
@@ -1020,7 +1023,14 @@ namespace Launcher
                     {
                         Logger.Log($"Failed to set CPU affinity: {ex.Message}");
                     }
-                    MinimizeToTray();
+                    if (_runInBackground)
+                    {
+                        MinimizeToTray();
+                    }
+                    else
+                    {
+                        Close();
+                    }
                 }
             }
             catch (Exception)
