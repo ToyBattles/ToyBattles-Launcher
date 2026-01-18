@@ -4,7 +4,6 @@ using System.Drawing;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
-using System.Management;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Threading;
@@ -18,6 +17,10 @@ namespace Launcher
     {
         #region Fields
 
+        // Registry settings
+        private const string RegistryPath = @"Software\\ToyBattlesLauncher";
+        private const string RegistryRunInBackgroundName = "RunInBackground";
+ 
         // Services
         private readonly Configuration _config;
         private readonly Downloader _downloader;
@@ -100,6 +103,9 @@ namespace Launcher
             InitializeCachedImages();
             SetupForm();
             SetupEventHandlers();
+
+            // Settings: ensure tray behavior matches persisted user preference
+            InitializeRunInBackgroundSetting();
 
             // Setup timers
             _animateTimer = CreateTimer(50, AnimateTimer_Tick);
@@ -265,8 +271,12 @@ namespace Launcher
         {
             if (e.CloseReason == CloseReason.UserClosing && !_isLoading)
             {
-                e.Cancel = true;
-                MinimizeToTray();
+                // If user disabled background mode, allow the launcher to exit normally.
+                if (_runInBackground)
+                {
+                    e.Cancel = true;
+                    MinimizeToTray();
+                }
             }
             else
             {
@@ -377,6 +387,8 @@ namespace Launcher
         {
             _runInBackground = runInBackgroundMenuItem.Checked;
 
+            SaveRunInBackgroundSetting(_runInBackground);
+
             if (!_runInBackground)
             {
                 _updateCheckTimer.Stop();
@@ -393,6 +405,63 @@ namespace Launcher
             _updateCheckTimer.Stop();
             _notificationCts?.Cancel();
             Application.Exit();
+        }
+
+        #endregion
+
+        #region Settings Persistence
+
+        private void InitializeRunInBackgroundSetting()
+        {
+            // Default to designer value unless a persisted value exists.
+            bool defaultValue = runInBackgroundMenuItem.Checked;
+            bool persisted = LoadRunInBackgroundSetting(defaultValue);
+
+            runInBackgroundMenuItem.Checked = persisted;
+            _runInBackground = persisted;
+
+            // If user disabled background mode, ensure we never have background checks running.
+            if (!_runInBackground)
+            {
+                _updateCheckTimer?.Stop();
+            }
+        }
+
+        private static bool LoadRunInBackgroundSetting(bool defaultValue)
+        {
+            try
+            {
+                using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RegistryPath, writable: false);
+                object? value = key?.GetValue(RegistryRunInBackgroundName);
+                if (value == null) return defaultValue;
+
+                // Accept common types: int (REG_DWORD), string, bool
+                return value switch
+                {
+                    int i => i != 0,
+                    string s when bool.TryParse(s, out bool b) => b,
+                    string s when int.TryParse(s, out int i) => i != 0,
+                    bool b => b,
+                    _ => defaultValue
+                };
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
+        private static void SaveRunInBackgroundSetting(bool enabled)
+        {
+            try
+            {
+                using RegistryKey key = Registry.CurrentUser.CreateSubKey(RegistryPath);
+                key.SetValue(RegistryRunInBackgroundName, enabled ? 1 : 0, RegistryValueKind.DWord);
+            }
+            catch
+            {
+                // Ignore persistence failures (no registry access, roaming profile issues, etc.)
+            }
         }
 
         #endregion
@@ -941,11 +1010,11 @@ namespace Launcher
                 {
                     try
                     {
-                        string cpuName = GetCpuName();
-                        if (cpuName.Contains("i9", StringComparison.OrdinalIgnoreCase))
-                        {
-                            process.ProcessorAffinity = new IntPtr(0xFF); // First 8 cores
-                        }
+                        ApplyRecommendedCpuAffinity(process);
+
+                        // Some launchers/games spawn or restart their main process shortly after start.
+                        // Re-apply for a few seconds to catch the real long-lived process.
+                        _ = Task.Run(ReapplyMicroVoltsAffinityForShortTimeAsync);
                     }
                     catch (Exception ex)
                     {
@@ -1155,14 +1224,141 @@ namespace Launcher
 
         private static string GetCpuName()
         {
-            using (var searcher = new ManagementObjectSearcher("select * from Win32_Processor"))
+            // Avoid WMI/System.Management here:
+            // it can be unavailable depending on target framework / runtime.
+            try
             {
-                foreach (ManagementObject obj in searcher.Get())
+                using var key = Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\CentralProcessor\0");
+                var name = key?.GetValue("ProcessorNameString") as string;
+                if (!string.IsNullOrWhiteSpace(name))
                 {
-                    return obj["Name"]?.ToString() ?? string.Empty;
+                    return name.Trim();
                 }
             }
-            return string.Empty;
+            catch
+            {
+                // ignore
+            }
+
+            try
+            {
+                return Environment.GetEnvironmentVariable("PROCESSOR_IDENTIFIER") ?? string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static void ApplyRecommendedCpuAffinity(Process process, bool waitForInputIdle = true)
+        {
+            // The goal is to improve stability on hybrid CPUs (e.g., i9-14900K)
+            // by keeping the game on the first logical processors (typically P-cores first).
+            // If this heuristic doesn't match a user's system, the game still runs normally.
+
+            // Give the process a moment to initialize before setting affinity.
+            if (waitForInputIdle)
+            {
+                try { process.WaitForInputIdle(3000); } catch { /* non-fatal */ }
+            }
+
+            string cpuName = GetCpuName();
+            int logicalProcessors = Environment.ProcessorCount;
+            Logger.Log($"CPU detected: '{cpuName}', logical processors: {logicalProcessors}, target pid: {SafeGetPid(process)}");
+
+            int desired = GetRecommendedAffinityLogicalProcessorCount(cpuName, logicalProcessors);
+            if (desired <= 0)
+            {
+                Logger.Log("CPU affinity not overridden for this CPU");
+                return;
+            }
+
+            SetAffinityToFirstLogicalProcessors(process, desired);
+            Logger.Log($"CPU affinity set: first {desired} logical processors");
+        }
+
+        private static int GetRecommendedAffinityLogicalProcessorCount(string cpuName, int logicalProcessors)
+        {
+            // MicroVolts is an older title; on very high core-count / hybrid CPUs,
+            // limiting to a smaller set can improve stability.
+            // i9-14900K: restrict to 8 logical processors (matches Windows "Set affinity" with 8 CPUs checked).
+            if (cpuName.Contains("14900K", StringComparison.OrdinalIgnoreCase))
+            {
+                return Math.Min(8, logicalProcessors);
+            }
+
+            // Generic i9 fallback: use first 8 logical processors.
+            if (cpuName.Contains("i9", StringComparison.OrdinalIgnoreCase))
+            {
+                return Math.Min(8, logicalProcessors);
+            }
+
+            return 0;
+        }
+
+        private static async Task ReapplyMicroVoltsAffinityForShortTimeAsync()
+        {
+            try
+            {
+                string cpuName = GetCpuName();
+                int logicalProcessors = Environment.ProcessorCount;
+                int desired = GetRecommendedAffinityLogicalProcessorCount(cpuName, logicalProcessors);
+                if (desired <= 0) return;
+
+                for (int i = 0; i < 10; i++)
+                {
+                    foreach (var p in Process.GetProcessesByName("MicroVolts"))
+                    {
+                        try
+                        {
+                            SetAffinityToFirstLogicalProcessors(p, desired);
+                        }
+                        catch
+                        {
+                            // ignore
+                        }
+                    }
+
+                    await Task.Delay(500);
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private static void SetAffinityToFirstLogicalProcessors(Process process, int count)
+        {
+            if (count <= 0) return;
+
+            int maxBits = IntPtr.Size * 8;
+            int bits = Math.Min(count, maxBits);
+            if (bits <= 0) return;
+
+            ulong mask = bits >= 64 ? ulong.MaxValue : ((1UL << bits) - 1UL);
+            // Re-acquire the process by PID to avoid stale handles in some ShellExecute/UAC scenarios.
+            Process p;
+            try { p = Process.GetProcessById(process.Id); }
+            catch { p = process; }
+
+            p.ProcessorAffinity = new IntPtr(unchecked((long)mask));
+
+            try
+            {
+                long applied = p.ProcessorAffinity.ToInt64();
+                Logger.Log($"CPU affinity mask requested=0x{mask:X}, applied=0x{applied:X}, IntPtrSize={IntPtr.Size}");
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private static int SafeGetPid(Process process)
+        {
+            try { return process.Id; }
+            catch { return -1; }
         }
 
         private static void SetCompatibilitySettings(string exePath)
